@@ -1,3 +1,4 @@
+library(httr)
 #Working with the single page
 #Specifying the url for desired website to be scrapped
 url <- 'https://www.wonderzine.com/wonderzine/life/news/198539-don-t-give-it-to-a-russian'
