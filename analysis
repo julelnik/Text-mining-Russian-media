@@ -1,0 +1,356 @@
+# loading the libraries 
+library(dplyr)
+library(quanteda)
+library(stm)
+library(ggplot2)
+library(wordcloud)
+
+
+#creating random sample of 2000 articles for close reading
+randomSample = function(df,n) { 
+  return (df[sample(nrow(df), n),])
+}
+integrum_data_random<-randomSample(integrum_mydata, 2000)
+
+#creation of stemming function
+mystem <- content_transformer(function(doc) {
+  sdoc <- system('~/mining/mystem -nl -e utf-8 ', intern=T, input=doc)
+  sdoc <- str_replace(sdoc, '\\|.*$', '')
+  sdoc <- str_replace(sdoc, '\\?', '')
+  sdoc <- paste(sdoc, collapse=" ")
+  attributes(sdoc) <- attributes(doc)
+  sdoc
+})
+
+#cleaning and creating corpus tm format
+corpus_tm_news<- tm::VCorpus(tm::VectorSource(integrum_mydata$all_text), readerControl=list(language='ru')) %>%
+  tm_map(content_transformer(tolower)) %>% #cast to lower case 
+  tm_map(removeWords, stopwords("ru")) %>% #stop words removing
+  tm_map(removeWords, stoplist) %>%
+  tm_map(removePunctuation) %>% # removing punctuation
+  tm_map(removeNumbers) %>% # removing numbers
+  tm_map(stripWhitespace) %>% # White spaces removing 
+  tm_map(mystem)
+
+
+#transform to qaunteda format
+corp_q_news <- corpus(corpus_tm_news$text)
+#add metadata to corpus
+docvars(corp_q_news, field = "category")<-integrum_mydata$Media_category
+docvars(corp_q_news, field = "date")<-integrum_mydata$betterDates2
+docvars(corp_q_news, field = "name")<-integrum_mydata$MediaDetail
+#head metadata
+head(docvars(corp_q_news))
+
+#creation of stop list
+stoplist<-scan("stoplist.txt", what="", sep="\n")
+
+#tokens
+tokens_news<- tokens(corp_q_news)
+head(tokens_news[[1]], 50)
+
+#document-feature matrix (dfm)
+dfmat_news <- dfm(corp_q_news, remove = c(stopwords("ru"), stoplist), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE)
+
+#remove word ukrain* and russ*
+dfmat_news <- dfm_remove(dfmat_news, pattern = phrase(uk))
+uk <- c('украин*','росси*')
+
+#frequency analysis 
+tstat_freq_news <- textstat_frequency(dfmat_news)
+#head 1000 words 
+head(tstat_freq_news, 1000)
+
+#KEYWORD-IN-CONTEXTS with word conflict*
+kw_ukr_conf <- kwic(tokens_news, pattern =  'конфликт*')
+head(kw_ukr_conf, 10)
+#KEYWORD-IN-CONTEXTS with word ukrain*
+kw_ukr <- kwic(tokens_news, pattern = c('украин*'))
+head(kw_ukr, 10)
+
+#comparison cloud for opposition and pro-goverment media
+opp_progor_dfm <- 
+  dfm(corpus_subset(corp_q_news, category %in% c("opposition", "pro-goverment")),
+      remove = c(stopwords("ru"), stoplist, pattern= phrase(uk)), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE, groups = "category") %>%
+  dfm_trim(min_termfreq = 3)
+
+textplot_wordcloud(opp_progor_dfm , comparison = TRUE, max_words = 300,
+                   color = c(RColorBrewer::brewer.pal(10, "Set2")))
+
+comparison.cloud(dfmat_news)
+
+# Calculate relative frequency
+dfm_news<- dfm_trim(dfmat_news, min_termfreq = 1000, verbose = FALSE)
+features_dfm <- textstat_frequency(dfm_news, n = 100)
+
+# Sort by reverse frequency order
+features_dfm$feature <- with(features_dfm, reorder(feature, -frequency))
+
+ggplot(features_dfm, aes(x = feature, y = frequency)) +
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Calculate relative frequency by category
+dfm_weight <- dfm_weight(dfmat_news, scheme = "prop")
+freq_weight <- textstat_frequency(dfm_weight, n = 20, groups = "category")
+
+ggplot(data = freq_weight, aes(x = nrow(freq_weight):1, y = frequency)) +
+  geom_point() +
+  facet_wrap(~ group, scales = "free") +
+  coord_flip() +
+  scale_x_continuous(breaks = nrow(freq_weight):1,
+                     labels = freq_weight$feature) +
+  labs(x = NULL, y = "Relative frequency")
+
+
+# Get frequency grouped by category
+freq_grouped <- textstat_frequency(dfmat_news, 
+                                   groups = "category")
+
+# Filter the term "конфликт"
+freq_conflict <- subset(freq_grouped, freq_grouped$feature %in% "конфикт*") 
+
+ggplot(tstat_freq, aes(x = group, y = frequency)) +
+  geom_point() + 
+  xlab(NULL) + 
+  ylab("Frequency") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+#plot “keyness” in a target and reference group
+# Create a dfm grouped by category
+pres_dfm <- dfm(corp_q_news, groups = "category", remove = c(stopwords("ru"), stoplist), remove_punct = TRUE, remove_numbers = TRUE, remove_symbols = TRUE)
+# Calculate keyness and determine opposition as target group
+result_keyness <- textstat_keyness(pres_dfm, target = "opposition")
+# Plot estimated word keyness
+textplot_keyness(result_keyness)
+
+#topic modelling STM
+#convert to quanteda to stm format
+dfm2stm_news <- convert(dfmat_news, to = "stm")
+#set number of topics 
+topic.count <- 20
+#model
+model.stm_news <- stm(dfm2stm_news$documents, dfm2stm_news$vocab, K = topic.count, data = dfm2stm_news$meta, init.type = "Spectral") # this is the actual stm call
+#function plots these values and labels each with its topic number:
+topicQuality(model=model.stm_news, documents=dfm2stm_news$documents, topic.names=topicNames)
+
+#label topics
+topicNames <- labelTopics(model.stm_news)
+k <- 20
+topic <- data.frame(
+  topicnames = c("Topic 1: Malaysia Airlines Flight shot down",	"Topic 2: Economy and sanctions",	"Topic 3: Mass media and news",
+                 "Topic 4: Relocation and assistance",	"Topic 5: History and literature",	"Topic 6: Crimea",	"Topic 7: International news",	
+                 "Topic 8: Ukraine's domestic policy",	"Topic 9: History of Second World War",	"Topic 10: Radio programmes",	
+                 "Topic 11: Detentions and security services",	"Topic 12: Economy and business",	"Topic 13: Political relations with the EU",
+                 "Topic 14: Culture",	"Topic 15: Savchenko's arrest",	"Topic 16: Sport",	"Topic 17: Russian gas supply to Ukraine",	"Topic 18: Presidential elections in Russia",
+                 "Topic 19: The War in Donbass", "Topic 20:War in Siria"),
+  TopicNumber = 1:k,
+  TopicProportions = colMeans(model.stm_news$theta) )
+
+#plot topics with new labels
+par(bty="n",lwd=3)
+plot.STM(model.stm,type="summary",custom.labels="",topic.names=topic$topicnames)
+
+#write table for top 20 words
+topics=data.frame(t(labelTopics(model.stm_news, n = 20)$prob))
+
+
+#plots of topics 6, 8, 11, 13, 14, 19 with dates
+model.stm.labels <- labelTopics(model.stm_news, 1:topic.count)
+dfm2stm_news$meta$date <- as.numeric(dfm2stm_news$meta$date)
+#estimateEffect
+model.stm.ee <- estimateEffect(1:topic.count ~ category + s(date), model.stm_news, meta = dfm2stm_news$meta)
+
+#set the style
+par(bty="n",lwd=3,xaxt="n")
+#set format
+par(mfrow=c(3,2))
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =6, 
+       main = paste0(topic$topicnames[6]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.02, 0.1))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =8, 
+       main = paste0(topic$topicnames[8]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.03, 0.21))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =14, 
+       main = paste0(topic$topicnames[14]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.03, 0.07))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =13, 
+       main = paste0(topic$topicnames[13]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.03, 0.25))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =19, 
+       main = paste0(topic$topicnames[19]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.03, 0.31))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+for (i in seq_along(sample(1:topic.count, size = 1)))
+{
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics =11, 
+       main = paste0(topic$topicnames[11]),
+       moderator="category", moderator.value="opposition", linecol="orangered3", ci.level = 0, 
+       printlegend = F, ylim = c(-0.03, 0.31))
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="progoverment", linecol="royalblue4", add=T, ci.level = 0, printlegend = F)
+  plot(model.stm.ee, covariate="date", model=model.stm_news, method="continuous", topics = i, main = paste0(topic$topicnames[i]),
+       moderator="category", moderator.value="stateholder", linecol="black", add=T, ci.level = 0, printlegend = F)
+}
+legend("bottomright", legend=c("opposition", "pro-goverment", "stateholder" ), col=c("orangered3", "royalblue4", "black"), lty=1)
+abline(h=0,lty=4,lwd=1,col="grey45")  # Put a dotted line on the y axis at 0.
+abline(v=c(2013,2014,2015,2016,2017,2018),lty=2,lwd=1,col="grey45")  # Put dotted lines 
+par(xaxt="s") # Tell R that it's OK to plot an x axis.
+
+
+
+
+#comparison of 16 and 20 topics
+plot(model.stm_news, type = "perspectives", topics = c(16,20))
+
+
+#sentiment analysis
+#read the list of sentiments
+data_sentiments<-read.csv("words_all_full_rating.csv", header=TRUE, sep=";")
+
+#label the sentiments 
+data_sentiments$average.rate[data_sentiments$average.rate==0]<-"neutral"
+data_sentiments$average.rate[data_sentiments$average.rate==-1]<-"negative"
+data_sentiments$average.rate[data_sentiments$average.rate==1]<-"positive"
+data_sentiments$average.rate[data_sentiments$average.rate==-2]<-"negative"
+data_sentiments$average.rate[data_sentiments$average.rate==2]<-"positive"
+
+negative <- data_sentiments[ which(data_sentiments$average.rate=="negative"), ]
+positive <- data_sentiments[ which(data_sentiments$average.rate=="positive"), ]
+neutral <- data_sentiments[ which(data_sentiments$average.rate=="neutral"), ]
+
+
+negative <- paste(negative$Words)
+positive <- paste(positive$Words)
+neutral <- paste(neutral$Words)
+
+#create the dictionary for quanteda 
+dict_sent <- dictionary(list(negative=negative,
+                             positive=positive,
+                             neutral=neutral))
+lengths(dict_sent)
+#attach the dictionary to corpus
+head(dfm(corp_q_lf, dictionary = dict_sent))
+
+
+#tokens for sentiment analysis
+tokens_news<- tokens(corp_q_news)
+tokens_news<- tokens_remove(tokens(corp_q_news, remove_numbers = TRUE, remove_punct = TRUE,
+                                   remove_symbols = TRUE), stopwords("ru"))
+tokens_news<- tokens_remove(tokens_news, remove=stoplist)
+head(tokens_news[[1]], 50)
+
+#sentiment dfmat
+dfmat_news_sent <- dfm(tokens_news, dictionary = dict_sent[1:2]) %>% 
+  dfm_group(group = 'date', fill = TRUE) 
+
+#plot
+matplot(dfmat_news_sent, type = 'l', xaxt = 'n', lty = 1, ylab = 'Frequency', col = 1:2)
+grid()
+axis(1, seq_len(ndoc(dfmat_news_sent)), labels = docvars(dfmat_news_sent, 'date'))
+legend('topright', col = 1:2, legend = c('Negative', 'Positive'), lty = 1, bg = 'white')
+
+
+n_eu <- ntoken(dfm(tokens_news, group = docvars(tokens_news, 'date')))
+plot((dfmat_news_sent[,2] - dfmat_news_sent[,1]) / n_eu, 
+     type = 'l', ylab = 'Sentiment', xlab = '', xaxt = 'n')
+axis(1, seq_len(ndoc(dfmat_news_sent)), labels = docvars(dfmat_news_sent, 'date'))
+grid()
+
+
+
+#sentiment analysis with key words Ukrain, freedom, rights 
+eu <- c('Украин*','свобод*','права*')
+toks_eu <- tokens_keep(tokens_news, pattern = phrase(eu), window = 10)
+dfmat_eu_lsd <- dfm(toks_eu, dictionary = dict_sent[1:2]) %>% 
+  dfm_group(group = 'date', fill = TRUE) 
+
+matplot(dfmat_eu_lsd , type = 'l', xaxt = 'n', lty = 1, ylab = 'Frequency', col = 1:2)
+grid()
+axis(1, seq_len(ndoc(dfmat_eu_lsd)), labels = docvars(dfmat_eu_lsd , 'date'))
+legend('topright', col = 1:2, legend = c('Negative', 'Positive'), lty = 1, bg = 'white')
+
+n_eu <- ntoken(dfm(toks_eu , group = docvars(toks_eu, 'date')))
+plot((dfmat_eu_lsd[,2] - dfmat_eu_lsd[,1]) / n_eu, 
+     type = 'l', ylab = 'Sentiment', xlab = '', xaxt = 'n')
+axis(1, seq_len(ndoc(dfmat_eu_lsd)), labels = docvars(dfmat_eu_lsd, 'date'))
+grid()
+abline(h = 0, lty = 2)
