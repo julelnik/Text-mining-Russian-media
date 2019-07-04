@@ -1,0 +1,101 @@
+#Working with the single page
+#Specifying the url for desired website to be scrapped
+url <- 'https://www.wonderzine.com/wonderzine/life/news/198539-don-t-give-it-to-a-russian'
+#Reading the HTML code from the website
+webpage <- read_html(url)
+#Using CSS selectors to scrap the rankings section
+data_text <- html_nodes(webpage,'.article-text')
+data_date <- html_nodes(webpage,'.cover-content > ul > li.item-meta.meta-posted > span')
+data_head <- html_nodes(webpage,'.row.main-content.post-cover-row > div > div > div > div.cover-content > h1')
+data_head2 <- html_nodes(webpage,'.row.main-content.post-cover-row > div > div > div > div.cover-content > p')
+#Converting the data to text
+date<- html_text(data_date)
+text<- html_text(data_text)
+head<- html_text(data_head)
+head2<- html_text(data_head2)
+#removing ,
+date<-gsub(",","", date)
+head<-gsub("Новости","", head)
+head<-gsub("\r","", head)
+#merge data to table
+data_all<-data.frame(Head=head,Head2=head2,Date=date,Text=text)
+data_all
+
+
+#working with all pages
+#links from google search first page
+ht <- read_html('https://www.google.fi/search?q=украина+site:wonderzine.com&num=100')
+links <- ht %>% html_nodes(xpath='//h3/a') %>% html_attr('href')
+links_html1 <- gsub('/url\\?q=','',sapply(strsplit(links[as.vector(grep('url',links))],split='&'),'[',1))
+
+# second page
+ht2 <- read_html('https://www.google.fi/search?q=%D1%83%D0%BA%D1%80%D0%B0%D0%B8%D0%BD%D0%B0+site:wonderzine.com&num=100&ei=nOgKXOONHISssgHVpJ6QAw&start=100&sa=N&ved=0ahUKEwjjy_We147fAhUEliwKHVWSBzIQ8tMDCPkE&biw=1366&bih=657')
+links2 <- ht2 %>% html_nodes(xpath='//h3/a') %>% html_attr('href')
+links_html2 <- gsub('/url\\?q=','',sapply(strsplit(links2[as.vector(grep('url',links2))],split='&'),'[',1))
+
+#third page
+ht3 <- read_html('https://www.google.fi/search?q=%D1%83%D0%BA%D1%80%D0%B0%D0%B8%D0%BD%D0%B0+site:wonderzine.com&num=100&ei=pOgKXMCoO8WisgGTyJrABw&start=200&sa=N&ved=0ahUKEwjAiv2i147fAhVFkSwKHROkBng4ZBDy0wMI0gQ&biw=1366&bih=657')
+links3 <- ht3 %>% html_nodes(xpath='//h3/a') %>% html_attr('href')
+links_html3 <- gsub('/url\\?q=','',sapply(strsplit(links3[as.vector(grep('url',links3))],split='&'),'[',1))
+
+#create a list of URLs
+links_all <- c(links_html1, links_html2, links_html3)
+data_links <- data.frame(links_all)
+urls <-paste(links_all)
+urls
+#base of the links 
+webpage <- list()
+for (i in 1:length(urls)) {
+  print(i)
+  if (!http_error(urls[i])) webpage[[i]] <-  read_html(urls[i]) else  webpage[[i]] <- NA
+}
+
+#shows NA
+table(is.na(webpage))
+
+#web scraping in loop
+webpage <- webpage[!is.na(webpage)]
+corpus <- list()
+for (i in 1:length(webpage))
+{  
+  Text = html_text(html_nodes(webpage[[i]],".article-text"))
+  Text <- ifelse(length(Text) == 0, NA, Text)
+  Text <-gsub("\r","", Text)
+  Text <-gsub("\n","", Text)
+  Text<-gsub("Текст:","", Text)
+  Text<-gsub("—","", Text)
+  Text<-gsub("-","", Text)
+  Text<-gsub("—","", Text)
+  Text<-gsub("Интервью:","", Text)
+  Text<-gsub("фотография:","", Text)
+  Date = html_text(html_nodes(webpage[[i]],"body > div.page-content > div.row.main-content.post-cover-row > div > div > div > div.cover-content > ul > li.item-meta.meta-posted > span"))
+  Date<-gsub(",","", Date)
+  Date <- ifelse(length(Date) == 0, NA, Date)
+  Head = html_text(html_nodes(webpage[[i]],"body > div.page-content > div.row.main-content.post-cover-row > div > div > div > div.cover-content > h1"))
+  Head<-gsub("Новости","", Head)
+  Head<-gsub("Стиль","", Head)
+  Head<-gsub("Вишлист","", Head)
+  Head<-gsub("Итоги года","", Head)
+  Head<-gsub("Красота","", Head)
+  Head<-gsub("Жизнь","", Head)
+  Head<-gsub("Спорт","", Head)
+  Head<-gsub("Образ жизни","", Head)
+  Head<-gsub("Еда","", Head)
+  Head<-gsub("Новая марка","", Head)
+  Head<-gsub("\r","", Head)
+  Head<-gsub("—","", Head)
+  Head <- ifelse(length(Head) == 0, NA, Head)
+  Head2 = html_text(html_nodes(webpage[[i]],"body > div.page-content > div.row.main-content.post-cover-row > div > div > div > div.cover-content > p"))
+  Head2 <- ifelse(length(Head2) == 0, NA, Head2)
+  Media_name <- c("Wonderzine")
+  Media_category <- c("for women")
+  Media_subcategory <- c("feminist")
+  corpus[[i]] <- c(Media_name,Media_category,Media_subcategory,Text,Date,Head,Head2)
+}
+corpusDf <- do.call("rbind",corpus)
+corpusDf <-  data.frame(corpusDf)
+colnames(corpusDf) <- c("Media_name","Media_category", "Media_subcategory", "Text","Date","Head","Head2")
+corpusDf <- corpusDf[!is.na(corpusDf$Text),] 
+write.csv(corpusDf, file = "MyData_Wonderzine.csv",row.names=FALSE, na="")
+write.table(corpusDf, file = "corpusWd.txt", sep = "\t",
+            row.names = FALSE)
